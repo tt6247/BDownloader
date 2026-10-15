@@ -1,0 +1,10 @@
+<Window x:Class="BDownloader.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:views="clr-namespace:BDownloader.Views" Title="BDownloader" Width="1280" Height="860" MinWidth="1060" MinHeight="740" WindowStartupLocation="CenterScreen" Background="#F4F6FA" FontFamily="Microsoft YaHei UI">
+ <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="202"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <Border Background="#142138"><Grid Margin="18,28,18,22"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <StackPanel Margin="12,0,0,35"><Border Background="#67DFC9" Width="42" Height="42" HorizontalAlignment="Left" CornerRadius="12"><TextBlock Text="B" FontSize="28" FontWeight="Bold" Foreground="#142138" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><TextBlock Text="BDownloader" FontSize="19" FontWeight="SemiBold" Foreground="White" Margin="0,15,0,5"/><TextBlock Text="MEDIA WORKSPACE" FontSize="9" Foreground="#8193AE"/></StackPanel>
+   <StackPanel Grid.Row="1"><TextBlock Text="工作空间" FontSize="10" Foreground="#687F9F" Margin="16,0,0,10"/><Button Content="↓    下载工作台" Style="{StaticResource SideButton}" Background="#273853" Foreground="White" Click="Workspace_Click"/><Button Content="◎    账号与登录" Style="{StaticResource SideButton}" Click="Accounts_Click"/><Button Content="▣    打开保存目录" Style="{StaticResource SideButton}" Click="Folder_Click"/></StackPanel>
+   <StackPanel Grid.Row="3" Margin="12,0,8,0"><Border BorderBrush="#2C3B51" BorderThickness="0,1,0,0" Margin="0,0,0,18"/><TextBlock x:Name="EngineStatus" Text="●  下载引擎已就绪" Foreground="#77D8BC" FontSize="11"/><TextBlock Text="完整下载 · 自动校验" Foreground="#8193AE" FontSize="10" Margin="0,8,0,14"/><TextBlock Text="BDownloader  1.0" Foreground="#5F7596" FontSize="10"/></StackPanel>
+  </Grid></Border>
+  <views:DownloadView Grid.Column="1" x:Name="Workspace"/>
+ </Grid>
+</Window>
