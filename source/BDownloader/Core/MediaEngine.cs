@@ -278,7 +278,8 @@ namespace BDownloader.Core
             CancellationToken token, Action<double> progress, bool comparePrevious)
         {
             var result = new MediaDownloadResult { Entry = entry, FilePath = file };
-            string receipt = file + ".verification.json";
+            string receipt = VerificationReceiptPath(file);
+            string legacyReceipt = file + ".verification.json";
             FileStream verificationLock = null;
             try
             {
@@ -286,10 +287,11 @@ namespace BDownloader.Core
                 token.ThrowIfCancellationRequested();
                 string previousHash = null;
                 long? previousSize = null;
-                if (comparePrevious && File.Exists(receipt))
+                string previousReceipt = File.Exists(receipt) ? receipt : legacyReceipt;
+                if (comparePrevious && File.Exists(previousReceipt))
                 {
                     JObject previous;
-                    try { previous = JObject.Parse(File.ReadAllText(receipt)); }
+                    try { previous = JObject.Parse(File.ReadAllText(previousReceipt)); }
                     catch (JsonException) { throw new InvalidOperationException("已有校验记录无法读取，请保留该记录并重新下载。"); }
                     previousHash = (string)previous["Sha256"];
                     previousSize = (long?)previous["FileSize"];
@@ -353,17 +355,31 @@ namespace BDownloader.Core
                 string temporary = receipt + ".tmp-" + Guid.NewGuid().ToString("N");
                 try
                 {
+                    Directory.CreateDirectory(Path.GetDirectoryName(receipt));
                     File.WriteAllText(temporary, JsonConvert.SerializeObject(proof, Formatting.Indented), new UTF8Encoding(false));
                     token.ThrowIfCancellationRequested();
                     if (File.Exists(receipt)) File.Replace(temporary, receipt, null); else File.Move(temporary, receipt);
                 }
                 finally { if (File.Exists(temporary)) File.Delete(temporary); }
+                // Retain the baseline in app data; successful downloads/rechecks leave no sidecar.
+                // Failed/cancelled checks preserve legacy records until they can be validated.
+                if (File.Exists(legacyReceipt)) File.Delete(legacyReceipt);
                 result.Success = true; result.ReceiptPath = receipt; result.Sha256 = hash; result.ActualDurationSeconds = probe.Duration;
             }
             catch (OperationCanceledException) { result.Cancelled = true; result.Error = "完整性校验已取消。"; }
             catch (Exception ex) { result.Error = FriendlyError(ex.Message, options.Session); }
             finally { verificationLock?.Dispose(); }
             return result;
+        }
+
+        private static string VerificationReceiptPath(string file)
+        {
+            string normalized = Path.GetFullPath(file).Replace('/', '\\').ToUpperInvariant();
+            using (SHA256 sha = SHA256.Create())
+            {
+                string key = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(normalized))).Replace("-", "").ToLowerInvariant();
+                return Path.Combine(Services.AppPaths.DataDirectory, "Storage", "Verification", key + ".json");
+            }
         }
 
         private async Task<ProbeResult> ProbeAsync(string file, CancellationToken token)

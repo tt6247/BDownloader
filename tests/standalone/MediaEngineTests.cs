@@ -109,27 +109,31 @@ internal static class MediaEngineTests
             Require((bool)proof["HasAudio"] && (bool)proof["HasVideo"], "stream receipt missing");
             Require(Math.Abs(result.ActualDurationSeconds - 3) < 0.2, "duration mismatch");
             Require(!File.ReadAllText(result.ReceiptPath).Contains("secret"), "receipt leaked private URL query");
+            Require(!File.Exists(video + ".verification.json"), "successful verification left a media sidecar");
+            Require(result.ReceiptPath.StartsWith(Path.Combine(BDownloader.Services.AppPaths.DataDirectory, "Storage", "Verification") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase), "receipt is outside app data");
         });
         Check("video only and audio only modes verify actual tracks", () => {
-            Require(Verify(silent, 3, MediaDownloadMode.VideoOnly).Success, "silent video failed");
+            var verified = Verify(silent, 3, MediaDownloadMode.VideoOnly);
+            Require(verified.Success, "silent video failed");
             Require(Verify(audioFile, 3, MediaDownloadMode.AudioM4a).Success, "audio file failed");
             Require(!Verify(silent, 3, MediaDownloadMode.VideoAndAudio).Success, "missing audio accepted");
-            Require(File.Exists(silent + ".verification.json"), "failed recheck removed the historical baseline");
+            Require(File.Exists(verified.ReceiptPath), "failed recheck removed the historical baseline");
         });
         Check("recheck detects changed but still decodable media", () => {
             string changed = Path.Combine(artifacts, "changed.mp4");
             string remuxed = Path.Combine(artifacts, "changed-remux.mp4");
             File.Copy(video, changed, true);
-            Require(Verify(changed, 3, MediaDownloadMode.VideoAndAudio).Success, "initial changed fixture did not verify");
-            string baseline = File.ReadAllText(changed + ".verification.json");
+            var initial = Verify(changed, 3, MediaDownloadMode.VideoAndAudio);
+            Require(initial.Success, "initial changed fixture did not verify");
+            string baseline = File.ReadAllText(initial.ReceiptPath);
             Execute(ffmpeg, new[] { "-v", "error", "-y", "-i", changed, "-c", "copy", "-metadata", "title=modified after verification", remuxed });
             File.Delete(changed); File.Move(remuxed, changed);
             var result = Verify(changed, 3, MediaDownloadMode.VideoAndAudio);
             Require(!result.Success && result.Error.Contains("SHA-256"), "changed decodable file accepted");
-            Require(File.ReadAllText(changed + ".verification.json") == baseline, "mismatched historical baseline overwritten");
+            Require(File.ReadAllText(initial.ReceiptPath) == baseline, "mismatched historical baseline overwritten");
             var again = Verify(changed, 3, MediaDownloadMode.VideoAndAudio);
             Require(!again.Success && again.Error.Contains("SHA-256"), "second recheck accepted changed bytes after losing baseline");
-            Require(File.ReadAllText(changed + ".verification.json") == baseline, "second failed recheck changed baseline");
+            Require(File.ReadAllText(initial.ReceiptPath) == baseline, "second failed recheck changed baseline");
         });
         Check("duration mismatch and resolution violation rejected", () => {
             Require(!Verify(video, 100, MediaDownloadMode.VideoAndAudio).Success, "short file accepted");
@@ -143,11 +147,51 @@ internal static class MediaEngineTests
             Require(!result.Success && !File.Exists(damaged + ".verification.json"), "truncated file verified");
         });
         Check("cancelled verification cannot mark success", () => {
-            string baseline = File.ReadAllText(video + ".verification.json");
+            string receipt = Verify(video, 3, MediaDownloadMode.VideoAndAudio).ReceiptPath;
+            string baseline = File.ReadAllText(receipt);
             var cancellation = new CancellationTokenSource(); cancellation.Cancel();
             MediaDownloadResult result = engine.VerifyAsync(video, Entry(3), new MediaDownloadOptions(), cancellation.Token).GetAwaiter().GetResult();
             Require(result.Cancelled && !result.Success, "cancelled check accepted");
-            Require(File.ReadAllText(video + ".verification.json") == baseline, "cancelled recheck changed the historical baseline");
+            Require(File.ReadAllText(receipt) == baseline, "cancelled recheck changed the historical baseline");
+        });
+        Check("legacy sidecar migrates only after successful verification", () => {
+            string legacy = Path.Combine(artifacts, "legacy.mp4"); File.Copy(video, legacy);
+            var initial = Verify(legacy, 3, MediaDownloadMode.VideoAndAudio);
+            Require(initial.Success, initial.Error);
+            string baseline = File.ReadAllText(initial.ReceiptPath);
+            File.Move(initial.ReceiptPath, legacy + ".verification.json");
+            File.WriteAllText(legacy + ".notes.json", "keep unrelated metadata");
+            var migrated = Verify(legacy, 3, MediaDownloadMode.VideoAndAudio);
+            Require(migrated.Success, migrated.Error);
+            Require(!File.Exists(legacy + ".verification.json") && File.Exists(migrated.ReceiptPath), "legacy sidecar not migrated");
+            Require((string)JObject.Parse(baseline)["Sha256"] == migrated.Sha256, "migration changed baseline hash");
+            Require(File.Exists(legacy + ".notes.json"), "unrelated JSON deleted");
+        });
+        Check("failed and cancelled legacy rechecks preserve their baseline", () => {
+            string legacy = Path.Combine(artifacts, "legacy-failure.mp4"); File.Copy(video, legacy);
+            var initial = Verify(legacy, 3, MediaDownloadMode.VideoAndAudio);
+            Require(initial.Success, initial.Error);
+            File.Move(initial.ReceiptPath, legacy + ".verification.json");
+            string baseline = File.ReadAllText(legacy + ".verification.json");
+            var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+            var cancelled = engine.VerifyAsync(legacy, Entry(3), new MediaDownloadOptions(), cancellation.Token).GetAwaiter().GetResult();
+            Require(cancelled.Cancelled && File.ReadAllText(legacy + ".verification.json") == baseline, "cancel lost legacy baseline");
+            string remuxed = Path.Combine(artifacts, "legacy-remux.mp4");
+            Execute(ffmpeg, new[] { "-v", "error", "-y", "-i", legacy, "-c", "copy", "-metadata", "title=changed", remuxed });
+            File.Delete(legacy); File.Move(remuxed, legacy);
+            var failed = Verify(legacy, 3, MediaDownloadMode.VideoAndAudio);
+            Require(!failed.Success && failed.Error.Contains("SHA-256"), "legacy hash mismatch accepted");
+            Require(File.ReadAllText(legacy + ".verification.json") == baseline && !File.Exists(initial.ReceiptPath), "failure replaced legacy baseline");
+        });
+        Check("same media filename in different folders has independent baselines", () => {
+            string first = Path.Combine(artifacts, "folder-a", "same.mp4");
+            string second = Path.Combine(artifacts, "folder-b", "same.mp4");
+            Directory.CreateDirectory(Path.GetDirectoryName(first)); Directory.CreateDirectory(Path.GetDirectoryName(second));
+            File.Copy(video, first); File.Copy(silent, second);
+            var a = Verify(first, 3, MediaDownloadMode.VideoAndAudio);
+            var b = Verify(second, 3, MediaDownloadMode.VideoOnly);
+            Require(a.Success && b.Success && a.ReceiptPath != b.ReceiptPath, "same filenames share a baseline");
+            Require(Verify(first, 3, MediaDownloadMode.VideoAndAudio).Success && Verify(second, 3, MediaDownloadMode.VideoOnly).Success, "independent recheck failed");
         });
         Check("download reports stderr progress quarantines corruption and retries fresh", () => TestFakeDownload(video).GetAwaiter().GetResult());
         Check("metadata cancellation terminates child process tree", () => TestCancellation().GetAwaiter().GetResult());
@@ -224,6 +268,7 @@ internal static class MediaEngineTests
             Require(!File.Exists(first.FilePath), "bad final blocks a fresh retry");
             MediaDownloadResult retry = (await fakeEngine.DownloadAsync(new[] { item }, options, null, CancellationToken.None))[0];
             Require(retry.Success && File.Exists(retry.ReceiptPath), "retry did not redownload and verify");
+            Require(!Directory.GetFiles(destination, "*.verification.json").Any(), "completed download left a sidecar");
         }
         finally { Environment.SetEnvironmentVariable("BD_TEST_FAKE_MEDIA", null); }
     }
