@@ -92,4 +92,8 @@ Windows x64，.NET Framework 4.7.2 或更高版本。附带 yt-dlp、QuickJS-NG 
 
 Git 不包含账号、Cookie、队列、下载视频、运行日志、本机归档、编译缓存或预编译二进制。
 
+## 开发文档
+
+完整导航见 [开发文档](docs/README.md)：[构建与本地开发](docs/BUILD.md)、[架构与功能流程](docs/ARCHITECTURE.md)、[数据与校验记录](docs/DATA.md)、[测试与验收](docs/TESTING.md)、[发布与维护](docs/RELEASING.md)。版本变化见 [更新记录](CHANGELOG.md)。
+
 会员画质、私密视频及地区内容需要对应账号权限。完整性校验针对取得的媒体，时长容差为 2 秒与 3% 中较大者。应用使用加密会话，需要在新账号窗口登录。
