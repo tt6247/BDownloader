@@ -92,18 +92,19 @@ namespace BDownloader.Views
                     {
                         var result = await new BilibiliPlaylistResolver().ResolveAsync(url, operation.Token);
                         if (!result.IsComplete) throw new InvalidDataException("播放列表分页不完整，未加入下载队列。请稍后重试。");
-                        collection = new MediaCollection { Title = result.Title, SourceUrl = url, ExpectedEntryCount = result.ExpectedCount,
+                        collection = new MediaCollection { Title = result.Title, SourceUrl = url, ExpectedEntryCount = result.ExpectedCount, CountKnown = true,
                             Entries = result.Entries.Select((x, i) => new MediaEntry { Id = x.Id, Title = x.Title, Url = x.Url, DurationSeconds = x.DurationSeconds, PlaylistIndex = i + 1 }).ToList() };
                     }
                     else collection = await engine.InspectAsync(url, lease.Session, operation.Token);
                 }
                 if (collection.Entries == null || collection.Entries.Count == 0) throw new InvalidDataException("没有找到可下载的视频。");
                 if (collection.ExpectedEntryCount != collection.Entries.Count) throw new InvalidDataException("播放列表不完整：声明 " + collection.ExpectedEntryCount + " 项，取得 " + collection.Entries.Count + " 项。原下载队列已保留，请重试或检查账号权限。");
+                if (!collection.CountKnown) throw new InvalidDataException("无法确认播放列表总数，已阻止可能不完整的批量下载。请改用列表页链接（如 list/?sid= 或空间合集页）重新解析。原下载队列已保留。");
                 // Replace the queue only after a complete inspection succeeds.
                 rows.Clear();
                 int index = 0;
                 foreach (MediaEntry entry in collection.Entries) rows.Add(new MediaRow { Entry = entry, Index = ++index, Selected = true, Status = "等待下载" });
-                listComplete = collection.ExpectedEntryCount == rows.Count;
+                listComplete = collection.CountKnown && collection.ExpectedEntryCount == rows.Count;
                 CollectionTitle.Text = (collection.Title ?? "下载列表") + " · " + rows.Count + " 项";
                 StatusText.Text = listComplete ? "解析完成：共 " + rows.Count + " 项。选择下载内容后点击“下载选中”。" : "列表不完整，已阻止批量下载。请重新解析。";
                 if (collection.Warnings != null && collection.Warnings.Count > 0) StatusText.Text += " " + string.Join("；", collection.Warnings);

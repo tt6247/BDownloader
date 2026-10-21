@@ -40,6 +40,8 @@ namespace BDownloader.Core
         public string SourceUrl { get; set; }
         public IList<MediaEntry> Entries { get; set; } = new List<MediaEntry>();
         public int ExpectedEntryCount { get; set; }
+        /// <summary>False when the extractor did not report a list total, so completeness cannot be proven.</summary>
+        public bool CountKnown { get; set; }
         public IList<string> Warnings { get; set; } = new List<string>();
     }
 
@@ -153,7 +155,12 @@ namespace BDownloader.Core
                     DurationSeconds = PositiveNumber(node["duration"])
                 });
             }
-            collection.ExpectedEntryCount = Math.Max(entries?.Count ?? 1, (int?)document["playlist_count"] ?? (int?)document["n_entries"] ?? 0);
+            int? declaredCount = (int?)document["playlist_count"] ?? (int?)document["n_entries"];
+            collection.ExpectedEntryCount = Math.Max(entries?.Count ?? 1, declaredCount ?? 0);
+            // Flat extractor output often omits the total; then "entries counted" is not proof of completeness.
+            collection.CountKnown = entries == null || declaredCount.HasValue;
+            if (!collection.CountKnown)
+                collection.Warnings.Add("解析器未提供列表总数，无法确认是否取得全部视频。");
             if (collection.Entries.Count != collection.ExpectedEntryCount)
                 collection.Warnings.Add("列表声明 " + collection.ExpectedEntryCount + " 项，取得 " + collection.Entries.Count + " 项；请检查不可用条目。");
             if (collection.Entries.Count == 0) throw new InvalidOperationException("没有找到可下载的视频。请检查链接或登录状态。");
