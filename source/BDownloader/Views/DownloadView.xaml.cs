@@ -92,8 +92,15 @@ namespace BDownloader.Views
                     {
                         var result = await new BilibiliPlaylistResolver().ResolveAsync(url, operation.Token);
                         if (!result.IsComplete) throw new InvalidDataException("播放列表分页不完整，未加入下载队列。请稍后重试。");
-                        collection = new MediaCollection { Title = result.Title, SourceUrl = url, ExpectedEntryCount = result.ExpectedCount, CountKnown = true,
-                            Entries = result.Entries.Select((x, i) => new MediaEntry { Id = x.Id, Title = x.Title, Url = x.Url, DurationSeconds = x.DurationSeconds, PlaylistIndex = i + 1 }).ToList() };
+                        collection = ToCollection(result, url);
+                    }
+                    else if (BilibiliPlaylistResolver.TryGetVideoId(url, out string videoId))
+                    {
+                        // A multi-part video is a list of pages; the view API gives the authoritative count and titles.
+                        var pages = await new BilibiliPlaylistResolver().ResolveVideoPagesAsync(videoId, operation.Token);
+                        collection = pages.ExpectedCount <= 1
+                            ? await engine.InspectAsync(url, lease.Session, operation.Token)
+                            : ToCollection(pages, url);
                     }
                     else collection = await engine.InspectAsync(url, lease.Session, operation.Token);
                 }
@@ -115,6 +122,12 @@ namespace BDownloader.Views
             catch (Exception ex) { StatusText.Text = "解析失败：" + ex.Message; }
             finally { SetBusy(false); }
         }
+
+        private static MediaCollection ToCollection(PlaylistResult result, string url) => new MediaCollection
+        {
+            Title = result.Title, SourceUrl = url, ExpectedEntryCount = result.ExpectedCount, CountKnown = true,
+            Entries = result.Entries.Select((x, i) => new MediaEntry { Id = x.Id, Title = x.Title, Url = x.Url, DurationSeconds = x.DurationSeconds, PlaylistIndex = i + 1 }).ToList()
+        };
 
         private MediaDownloadOptions Options(MediaSession session) => new MediaDownloadOptions {
             OutputDirectory = Path.GetFullPath(OutputBox.Text), Session = session,

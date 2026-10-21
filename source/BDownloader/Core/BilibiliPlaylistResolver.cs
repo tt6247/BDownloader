@@ -51,6 +51,54 @@ namespace BDownloader.Core
             return TryParse(url, out ignored);
         }
 
+        /// <summary>Recognises a single Bilibili video page (/video/BV...) and returns its BV id.</summary>
+        public static bool TryGetVideoId(string url, out string bvid)
+        {
+            bvid = null;
+            Uri uri;
+            if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out uri)
+                || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) || !string.IsNullOrEmpty(uri.UserInfo)) return false;
+            if (uri.Host != "www.bilibili.com" && uri.Host != "bilibili.com") return false;
+            Match match = Regex.Match(uri.AbsolutePath, @"^/video/(BV[0-9A-Za-z]{10})/?$");
+            if (!match.Success) return false;
+            bvid = match.Groups[1].Value;
+            return true;
+        }
+
+        /// <summary>Lists every part (分P) of a video from the view API, which reports the authoritative total.</summary>
+        public async Task<PlaylistResult> ResolveVideoPagesAsync(string bvid, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            JObject data = await GetDataAsync("https://api.bilibili.com/x/web-interface/view?bvid=" + bvid, token).ConfigureAwait(false);
+            return ParseVideoPages(data, bvid);
+        }
+
+        /// <summary>Parses a view API payload. Public for deterministic offline regression tests.</summary>
+        public static PlaylistResult ParseVideoPages(JObject data, string bvid)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            var pages = data["pages"] as JArray;
+            if (pages == null || pages.Count == 0) throw Incomplete("视频分P数据为空");
+            int? declared = ReadCount(data["videos"]);
+            if (declared.HasValue && declared.Value != pages.Count) throw Incomplete("分P总数与分P列表不一致");
+            var result = new PlaylistResult { Title = (string)data["title"] ?? bvid, ExpectedCount = pages.Count, IsComplete = true };
+            var numbers = new HashSet<int>();
+            foreach (JToken page in pages)
+            {
+                int? number = ReadCount(page["page"]);
+                if (!number.HasValue || number.Value <= 0 || !numbers.Add(number.Value)) throw Incomplete("分P序号无效或重复");
+                string part = (string)page["part"];
+                result.Entries.Add(new PlaylistEntry
+                {
+                    Id = bvid + "_p" + number.Value.ToString(CultureInfo.InvariantCulture),
+                    Title = "P" + number.Value.ToString(CultureInfo.InvariantCulture) + " " + (string.IsNullOrWhiteSpace(part) ? bvid : part),
+                    Url = "https://www.bilibili.com/video/" + bvid + "?p=" + number.Value.ToString(CultureInfo.InvariantCulture),
+                    DurationSeconds = ReadDuration(page["duration"])
+                });
+            }
+            return result;
+        }
+
         public async Task<PlaylistResult> ResolveAsync(string url, CancellationToken token)
         {
             ListAddress address;

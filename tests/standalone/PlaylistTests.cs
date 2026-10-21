@@ -33,6 +33,20 @@ internal static class PlaylistTests
             Require(requests.Skip(1).All(u => u.Contains("only_normal=false")), "unavailable entries were silently filtered");
         });
 
+        Check("multi-part video lists every page with its own title and duration", async () =>
+        {
+            var data = JObject.Parse("{ 'title':'Course', 'videos':3, 'pages':[ {'page':1,'part':'Intro','duration':120}, {'page':2,'part':'','duration':90}, {'page':3,'part':'Review','duration':60} ] }");
+            PlaylistResult result = BilibiliPlaylistResolver.ParseVideoPages(data, "BV1WTnozqEd3");
+            Require(result.IsComplete && result.ExpectedCount == 3 && result.Entries.Count == 3, "page count not verified");
+            Require(result.Entries[1].Url == "https://www.bilibili.com/video/BV1WTnozqEd3?p=2", "page URL missing");
+            Require(result.Entries.Select(v => v.Id).Distinct().Count() == 3, "page IDs are not unique");
+            Require(result.Entries[0].Title == "P1 Intro" && result.Entries[2].DurationSeconds == 60, "titles or durations missing");
+            bool rejected = false;
+            try { BilibiliPlaylistResolver.ParseVideoPages(JObject.Parse("{ 'videos':4, 'pages':[ {'page':1} ] }"), "BV1WTnozqEd3"); }
+            catch (InvalidOperationException) { rejected = true; }
+            Require(rejected, "mismatched page total was accepted");
+        });
+
         Check("explicit season chooses season namespace and all pages", async () =>
         {
             var requests = new List<string>();

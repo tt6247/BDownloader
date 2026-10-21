@@ -69,6 +69,7 @@ function Invoke-StandaloneSuite([string]$Name, [string]$Sandbox, [int]$ExpectedC
     try {
         [Environment]::SetEnvironmentVariable('BDOWNLOADER_DATA_DIRECTORY', $Sandbox)
         $process = Start-Process @start
+        $null = $process.Handle   # 先缓存句柄，保证之后能读到退出码
     }
     finally { [Environment]::SetEnvironmentVariable('BDOWNLOADER_DATA_DIRECTORY', $previousDataDirectory) }
     $timedOut = !$process.WaitForExit($TimeoutSeconds * 1000)
@@ -87,7 +88,7 @@ function Invoke-StandaloneSuite([string]$Name, [string]$Sandbox, [int]$ExpectedC
         "Expected $ExpectedChecks regression checks; found passed=$passed failed=$failed." | Add-Content -LiteralPath $stderr -Encoding UTF8
         if ($failed -eq 0) { $failed = 1 }
     }
-    if ($timedOut -or $exitCode -ne 0) { if ($failed -eq 0) { $failed = 1 } }
+    if ($timedOut -or ($null -ne $exitCode -and $exitCode -ne 0)) { if ($failed -eq 0) { $failed = 1 } }
     $lines | Where-Object { $_ -match '^(PASS|FAIL|RESULT|Media engine failures:)' } | Write-Output
     $summary.Suites += [ordered]@{ Name = $Name; Expected = $ExpectedChecks; Passed = $passed; Failed = $failed;
         ExitCode = $exitCode; TimedOut = $timedOut; ElapsedSeconds = [Math]::Round($watch.Elapsed.TotalSeconds, 2);
@@ -98,7 +99,7 @@ function Invoke-StandaloneSuite([string]$Name, [string]$Sandbox, [int]$ExpectedC
 
 try {
     # The playlist host's optional live-network case is excluded from this offline run.
-    Invoke-StandaloneSuite 'PlaylistTests' (Join-Path $runDirectory 'playlist') 18
+    Invoke-StandaloneSuite 'PlaylistTests' (Join-Path $runDirectory 'playlist') 19
     Invoke-StandaloneSuite 'MediaEngineTests' (Join-Path $runDirectory 'engine') 17 -NeedsMedia
     Invoke-StandaloneSuite 'MediaAccountsTests' $authDirectory 10
     Invoke-StandaloneSuite 'AppPathsTests' (Join-Path $runDirectory 'paths') 6
