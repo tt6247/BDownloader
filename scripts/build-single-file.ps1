@@ -97,7 +97,7 @@ $manifestXml = @'
 '@
 [IO.File]::WriteAllText($applicationManifest, $manifestXml, $utf8)
 $arguments = @('/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/deterministic+', '/langversion:latest', '/nostdlib+',
-    "/out:$temporaryExe", "/win32manifest:$applicationManifest", "/resource:$payloadZip,BDownloader.Payload.zip", $launcherSource, $bundleInfo)
+    "/out:$temporaryExe", "/win32icon:$(Join-Path $workspace 'source\BDownloader\Resources\AppIcon.ico')", "/win32manifest:$applicationManifest", "/resource:$payloadZip,BDownloader.Payload.zip", $launcherSource, $bundleInfo)
 foreach ($name in @('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Security.dll', 'System.Runtime.Serialization.dll',
     'System.IO.Compression.dll', 'System.IO.Compression.FileSystem.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Xml.dll')) {
     $arguments += "/reference:$(Join-Path $references $name)"

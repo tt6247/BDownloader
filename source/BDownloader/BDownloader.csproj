@@ -8,6 +8,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>BDownloader</RootNamespace>
     <AssemblyName>BDownloader</AssemblyName>
+    <ApplicationIcon>Resources\AppIcon.ico</ApplicationIcon>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <TargetFrameworkProfile />
     <PlatformTarget>x64</PlatformTarget>
