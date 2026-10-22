@@ -16,7 +16,7 @@ foreach ($required in @($compiler, (Join-Path $references 'mscorlib.dll'), $laun
     if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing build input: $required" }
 }
 $runtimeNames = @('BDownloader.exe', 'BDownloader.exe.config', 'Newtonsoft.Json.dll', 'QRCoder.dll', 'ffmpeg.exe',
-    'FFmpeg_LICENSE.txt', 'yt-dlp.exe', 'qjs.exe', 'quickjs-runtime.json', 'media-tools.json', 'LICENSE.txt')
+    'FFmpeg_LICENSE.txt', 'yt-dlp.exe', 'qjs.exe', 'quickjs-runtime.json', 'media-tools.json', 'LICENSE.txt', 'aria2c.exe')
 $runId = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $build = Join-Path $workspace "build\single-file\$runId"
 $stage = Join-Path $build 'staging'
@@ -36,7 +36,7 @@ $notices = Join-Path $payload 'ThirdPartyLicenses'
 New-Item -ItemType Directory -Path $notices | Out-Null
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $application 'ThirdPartyLicenses') -File) {
     if ($file.Name -eq 'quickjs-release-proof.json') { Copy-Item -LiteralPath $file.FullName -Destination $notices; continue }
-    if ($file.Name -notmatch '^(yt-dlp|FFmpeg|Newtonsoft\.Json|QRCoder|quickjs|qjs)[A-Za-z0-9_.-]*$' -or
+    if ($file.Name -notmatch '^(yt-dlp|FFmpeg|Newtonsoft\.Json|QRCoder|quickjs|qjs|aria2)[A-Za-z0-9_.-]*$' -or
         $file.Name -notmatch '(?i)(LICENSE|COPYING|NOTICE|SHA(?:2-)?256|sha256sum)' -or
         !($file.Name -match '(?i)\.(txt|md|sha256sum)$' -or $file.Name.EndsWith('LICENSE') -or $file.Name -eq 'yt-dlp-SHA2-256SUMS')) { continue }
     Copy-Item -LiteralPath $file.FullName -Destination $notices

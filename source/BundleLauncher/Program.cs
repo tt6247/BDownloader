@@ -22,7 +22,7 @@ namespace BDownloader.BundleLauncher
         private const string ManifestName = "bundle-manifest.json";
         private static readonly HashSet<string> RuntimeNames = new HashSet<string>(StringComparer.Ordinal) {
             "BDownloader.exe", "BDownloader.exe.config", "Newtonsoft.Json.dll", "QRCoder.dll", "ffmpeg.exe",
-            "FFmpeg_LICENSE.txt", "yt-dlp.exe", "qjs.exe", "quickjs-runtime.json", "media-tools.json", "LICENSE.txt"
+            "FFmpeg_LICENSE.txt", "yt-dlp.exe", "qjs.exe", "quickjs-runtime.json", "media-tools.json", "LICENSE.txt", "aria2c.exe"
         };
 
         [STAThread]
@@ -188,7 +188,7 @@ namespace BDownloader.BundleLauncher
             if (!name.StartsWith("ThirdPartyLicenses/", StringComparison.Ordinal)) return false;
             name = name.Substring("ThirdPartyLicenses/".Length);
             if (name == "quickjs-release-proof.json") return true;
-            return Regex.IsMatch(name, @"^(yt-dlp|FFmpeg|Newtonsoft\.Json|QRCoder|quickjs|qjs)[A-Za-z0-9_.-]*$", RegexOptions.IgnoreCase) &&
+            return Regex.IsMatch(name, @"^(yt-dlp|FFmpeg|Newtonsoft\.Json|QRCoder|quickjs|qjs|aria2)[A-Za-z0-9_.-]*$", RegexOptions.IgnoreCase) &&
                 Regex.IsMatch(name, @"(?i)(LICENSE|COPYING|NOTICE|SHA(?:2-)?256|sha256sum)") &&
                 (Regex.IsMatch(name, @"(?i)\.(txt|md|sha256sum)$") || name.EndsWith("LICENSE", StringComparison.Ordinal) || name == "yt-dlp-SHA2-256SUMS");
         }
