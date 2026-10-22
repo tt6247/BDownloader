@@ -199,6 +199,7 @@ namespace BDownloader.Core
                         "--print", "before_dl:" + DurationPrefix + "%(duration)j" });
                     args.AddRange(FormatArguments(options));
                     args.AddRange(Aria2Arguments());
+                    if (DebugEnabled) args.Add("--verbose");
                     args.Add("--"); args.Add(entry.Url);
                     Report(progress, entry, MediaDownloadState.Resolving, 0, "获取下载地址", completed, selected.Count);
                     double? duration = entry.DurationSeconds;
@@ -236,6 +237,7 @@ namespace BDownloader.Core
                         args.Insert(args.Count - 2, "--no-continue");
                         output = await MediaProcess.RunAsync(YtDlp, args, directory, onLine, false, token).ConfigureAwait(false);
                     }
+                    if (output.ExitCode != 0 && DebugEnabled) AppendDebugLog(entry.Id + " " + entry.Url, output.StandardError);
                     if (output.ExitCode != 0) throw new InvalidOperationException(FriendlyError(output.StandardError, options.Session));
                     if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new InvalidOperationException("下载器没有产生完整的最终文件，未标记为完成。");
                     path = Path.GetFullPath(path);
@@ -455,6 +457,17 @@ namespace BDownloader.Core
             string log = Path.Combine(logDirectory, "aria2.log");
             return new[] { "--external-downloader", aria2,
                 "--external-downloader-args", "aria2c:-x8 -s8 -k1M --file-allocation=none --auto-file-renaming=false --log=\"" + log + "\" --log-level=notice" };
+        }
+
+        /// <summary>Set BDOWNLOADER_DEBUG=1 to record yt-dlp's verbose output for failed downloads.</summary>
+        private static bool DebugEnabled => Environment.GetEnvironmentVariable("BDOWNLOADER_DEBUG") == "1";
+
+        private static void AppendDebugLog(string title, string text)
+        {
+            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BDownloader");
+            Directory.CreateDirectory(folder);
+            File.AppendAllText(Path.Combine(folder, "download-debug.log"),
+                "=== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + title + Environment.NewLine + (text ?? "") + Environment.NewLine);
         }
 
         private List<string> BaseArguments(MediaSession session)
