@@ -433,11 +433,13 @@ namespace BDownloader.Core
         }
 
         /// <summary>
-        /// Optional multi-connection transfer for single-file streams. Only used when aria2c.exe sits next to
-        /// yt-dlp.exe; without it yt-dlp's built-in downloader is used exactly as before. Delete aria2c.exe to disable.
+        /// Optional multi-connection transfer for single-file streams. Off by default: it is used only when
+        /// BDOWNLOADER_ARIA2=1 is set and aria2c.exe sits next to yt-dlp.exe. Otherwise yt-dlp's built-in
+        /// downloader is used exactly as before.
         /// </summary>
         private IEnumerable<string> Aria2Arguments()
         {
+            if (Environment.GetEnvironmentVariable("BDOWNLOADER_ARIA2") != "1") return Enumerable.Empty<string>();
             string aria2 = Path.Combine(directory, "aria2c.exe");
             if (!File.Exists(aria2)) return Enumerable.Empty<string>();
             return new[] { "--external-downloader", aria2,
