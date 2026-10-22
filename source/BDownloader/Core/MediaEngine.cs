@@ -202,7 +202,7 @@ namespace BDownloader.Core
                     args.Add("--"); args.Add(entry.Url);
                     Report(progress, entry, MediaDownloadState.Resolving, 0, "获取下载地址", completed, selected.Count);
                     double? duration = entry.DurationSeconds;
-                    var output = await MediaProcess.RunAsync(YtDlp, args, directory, line => {
+                    Action<string> onLine = line => {
                         if (line.StartsWith(FilePrefix, StringComparison.Ordinal))
                         {
                             try { path = JsonConvert.DeserializeObject<string>(line.Substring(FilePrefix.Length)); } catch (JsonException) { }
@@ -227,7 +227,15 @@ namespace BDownloader.Core
                         else if (line.StartsWith("[Merger]", StringComparison.Ordinal) || line.StartsWith("[ExtractAudio]", StringComparison.Ordinal)
                             || line.StartsWith("[VideoRemuxer]", StringComparison.Ordinal))
                             Report(progress, entry, MediaDownloadState.Processing, 100, "合并或转换媒体", completed, selected.Count);
-                    }, false, token).ConfigureAwait(false);
+                    };
+                    var output = await MediaProcess.RunAsync(YtDlp, args, directory, onLine, false, token).ConfigureAwait(false);
+                    if (output.ExitCode != 0 && (output.StandardError ?? "").Contains("HTTP Error 416"))
+                    {
+                        // A partial file left by an earlier attempt no longer matches the server's copy.
+                        // Restart this item once without resuming; the option must come before the "--" separator.
+                        args.Insert(args.Count - 2, "--no-continue");
+                        output = await MediaProcess.RunAsync(YtDlp, args, directory, onLine, false, token).ConfigureAwait(false);
+                    }
                     if (output.ExitCode != 0) throw new InvalidOperationException(FriendlyError(output.StandardError, options.Session));
                     if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new InvalidOperationException("下载器没有产生完整的最终文件，未标记为完成。");
                     path = Path.GetFullPath(path);
