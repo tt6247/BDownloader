@@ -433,16 +433,20 @@ namespace BDownloader.Core
         }
 
         /// <summary>
-        /// Optional multi-connection transfer for single-file streams. Used when aria2c.exe sits next to
-        /// yt-dlp.exe. Set BDOWNLOADER_ARIA2=0 to use yt-dlp's built-in downloader instead.
+        /// Optional multi-connection transfer for single-file streams. Off by default: used only when
+        /// BDOWNLOADER_ARIA2=1 is set and aria2c.exe sits next to yt-dlp.exe. aria2 writes its log to
+        /// %LOCALAPPDATA%\BDownloader\aria2.log so a failure can be diagnosed.
         /// </summary>
         private IEnumerable<string> Aria2Arguments()
         {
-            if (Environment.GetEnvironmentVariable("BDOWNLOADER_ARIA2") == "0") return Enumerable.Empty<string>();
+            if (Environment.GetEnvironmentVariable("BDOWNLOADER_ARIA2") != "1") return Enumerable.Empty<string>();
             string aria2 = Path.Combine(directory, "aria2c.exe");
             if (!File.Exists(aria2)) return Enumerable.Empty<string>();
+            string logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BDownloader");
+            Directory.CreateDirectory(logDirectory);
+            string log = Path.Combine(logDirectory, "aria2.log");
             return new[] { "--external-downloader", aria2,
-                "--external-downloader-args", "aria2c:-x8 -s8 -k1M --file-allocation=none --auto-file-renaming=false" };
+                "--external-downloader-args", "aria2c:-x8 -s8 -k1M --file-allocation=none --auto-file-renaming=false --log=\"" + log + "\" --log-level=notice" };
         }
 
         private List<string> BaseArguments(MediaSession session)
