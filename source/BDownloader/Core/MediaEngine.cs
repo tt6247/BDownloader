@@ -198,6 +198,7 @@ namespace BDownloader.Core
                         "--print", "after_move:" + FilePrefix + "%(filepath)j",
                         "--print", "before_dl:" + DurationPrefix + "%(duration)j" });
                     args.AddRange(FormatArguments(options));
+                    args.AddRange(Aria2Arguments());
                     args.Add("--"); args.Add(entry.Url);
                     Report(progress, entry, MediaDownloadState.Resolving, 0, "获取下载地址", completed, selected.Count);
                     double? duration = entry.DurationSeconds;
@@ -429,6 +430,18 @@ namespace BDownloader.Core
                 File.Replace(temporary, file, null);
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+
+        /// <summary>
+        /// Optional multi-connection transfer for single-file streams. Only used when aria2c.exe sits next to
+        /// yt-dlp.exe; without it yt-dlp's built-in downloader is used exactly as before. Delete aria2c.exe to disable.
+        /// </summary>
+        private IEnumerable<string> Aria2Arguments()
+        {
+            string aria2 = Path.Combine(directory, "aria2c.exe");
+            if (!File.Exists(aria2)) return Enumerable.Empty<string>();
+            return new[] { "--external-downloader", aria2,
+                "--external-downloader-args", "aria2c:-x8 -s8 -k1M --file-allocation=none --auto-file-renaming=false" };
         }
 
         private List<string> BaseArguments(MediaSession session)
