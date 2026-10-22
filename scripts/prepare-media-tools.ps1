@@ -59,6 +59,22 @@ foreach ($license in $licenses) {
     $licensePaths += Get-VerifiedFile $license.Url $license.Name $license.Sha256
 }
 
+# aria2c (optional multi-connection downloader): official Windows x64 release. The whole archive is
+# verified before anything is extracted; the extracted executable must report the pinned version.
+$Aria2Version = '1.37.0'
+$Aria2ZipName = "aria2-$Aria2Version-win-64bit-build1.zip"
+$Aria2ZipSha256 = '67D015301EEF0B612191212D564C5BB0A14B5B9C4796B76454276A4D28D9B288'
+$aria2Zip = Get-VerifiedFile "https://github.com/aria2/aria2/releases/download/release-$Aria2Version/$Aria2ZipName" $Aria2ZipName $Aria2ZipSha256
+$aria2Extract = Join-Path $ToolsDirectory "aria2-$Aria2Version-win-64bit"
+Remove-Item -LiteralPath $aria2Extract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -LiteralPath $aria2Zip -DestinationPath $aria2Extract -Force
+$aria2Exe = Get-ChildItem -LiteralPath $aria2Extract -Recurse -Filter 'aria2c.exe' -File | Select-Object -First 1
+if (!$aria2Exe) { throw "aria2c.exe was not found in $Aria2ZipName." }
+$aria2Reported = (& $aria2Exe.FullName --version | Select-Object -First 1)
+if ($aria2Reported -notmatch "^aria2 version $([regex]::Escape($Aria2Version))\s*$") { throw "Unexpected aria2c version: $aria2Reported" }
+$aria2Licenses = @(Get-ChildItem -LiteralPath $aria2Extract -Recurse -File | Where-Object { $_.Name -match '(?i)^(COPYING|LICENSE|NOTICE)' })
+if ($aria2Licenses.Count -eq 0) { Write-Warning 'No aria2 license file was found in the archive; check THIRD_PARTY_NOTICES.md before distributing.' }
+
 # Install only after all downloads, licenses, manifests and extracted files pass.
 Copy-VerifiedFile $ytExe (Join-Path $ApplicationDirectory 'yt-dlp.exe')
 $licenseDirectory = Join-Path $ApplicationDirectory 'ThirdPartyLicenses'
@@ -67,6 +83,8 @@ foreach ($licensePath in $licensePaths) {
     Copy-VerifiedFile $licensePath (Join-Path $licenseDirectory ([IO.Path]::GetFileName($licensePath)))
 }
 Copy-VerifiedFile $ytManifest (Join-Path $licenseDirectory ([IO.Path]::GetFileName($ytManifest)))
+Copy-VerifiedFile $aria2Exe.FullName (Join-Path $ApplicationDirectory 'aria2c.exe')
+foreach ($file in $aria2Licenses) { Copy-VerifiedFile $file.FullName (Join-Path $licenseDirectory ("aria2-" + $file.Name)) }
 
 & (Join-Path $PSScriptRoot 'prepare-quickjs.ps1') -ToolsDirectory (Join-Path $ToolsDirectory 'quickjs') -ApplicationDirectory $ApplicationDirectory
 $quickJsMetadata = Get-Content -LiteralPath (Join-Path $ApplicationDirectory 'quickjs-runtime.json') -Raw | ConvertFrom-Json
@@ -75,6 +93,11 @@ $metadata = [ordered]@{
     checkedDate = '2026-10-15'
     platform = 'windows-x64'
     quickJs = $quickJsMetadata
+    aria2 = [ordered]@{
+        version = $Aria2Version
+        zipSha256 = $Aria2ZipSha256.ToLowerInvariant()
+        source = "https://github.com/aria2/aria2/releases/download/release-$Aria2Version/$Aria2ZipName"
+    }
     ytDlp = [ordered]@{
         version = $YtDlpVersion
         sha256 = $YtDlpSha256.ToLowerInvariant()
