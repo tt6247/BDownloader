@@ -598,6 +598,13 @@ namespace BDownloader.Core
                     previousBenignNotice = true;
                     continue;
                 }
+                // FFmpeg's null muxer warns about duplicate/non-increasing timestamps (common in Bilibili streams).
+                // It exits 0 and every frame decodes; it is a timing notice, not bitstream corruption.
+                if (Regex.IsMatch(line, @"^\[null @ (?:0x)?[0-9a-fA-F]+\] Application provided invalid, non monotonically increasing dts to muxer in stream \d+: -?\d+ >= -?\d+$"))
+                {
+                    previousBenignNotice = true;
+                    continue;
+                }
                 if (previousBenignNotice && Regex.IsMatch(line, @"^Last message repeated \d+ times$")) continue;
                 return true;
             }

@@ -91,6 +91,8 @@ internal static class MediaEngineTests
             Require(!(bool)check.Invoke(null, new object[] { notice + "[libdav1d @ 075c3d80] Unknown Metadata OBU type 6\r\n    Last message repeated 41 times\r\n" }), "optional AV1 metadata notice rejected");
             Require((bool)check.Invoke(null, new object[] { "Last message repeated 41 times" }), "unattributed repeated errors ignored");
             Require((bool)check.Invoke(null, new object[] { "[libdav1d @ 075c3d80] Unknown Metadata OBU type 7" }), "unrecognized metadata error ignored");
+            Require(!(bool)check.Invoke(null, new object[] { "[null @ 0000028a1c2b3d40] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 21602 >= 21602\r\n    Last message repeated 5 times\r\n" }), "harmless null-muxer dts warning rejected");
+            Require((bool)check.Invoke(null, new object[] { "[null @ 0000028a1c2b3d40] Application provided invalid, non monotonically increasing dts to muxer in stream 0: 21602 >= 21602\r\n[h264 @ 1234] error while decoding MB 1 2" }), "decode error hidden behind dts warning");
         });
 
         string video = Path.Combine(artifacts, "complete.mp4");
