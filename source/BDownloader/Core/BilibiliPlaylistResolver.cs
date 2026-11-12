@@ -73,6 +73,35 @@ namespace BDownloader.Core
             return ParseVideoPages(data, bvid);
         }
 
+        /// <summary>
+        /// Resolves a plain video link. A multi-part video lists its parts; a single-part video that
+        /// belongs to a collection (合集) lists the whole collection through the paged collection API,
+        /// so its total is verified the same way as a collection link.
+        /// </summary>
+        public async Task<PlaylistResult> ResolveVideoAsync(string bvid, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            JObject data = await GetDataAsync("https://api.bilibili.com/x/web-interface/view?bvid=" + bvid, token).ConfigureAwait(false);
+            PlaylistResult pages = ParseVideoPages(data, bvid);
+            long owner, season;
+            if (pages.ExpectedCount > 1 || !TryGetCollection(data, out owner, out season)) return pages;
+            return await ResolveListAsync(new ListAddress { OwnerId = owner, ListId = season, IsSeason = true, ExplicitType = true }, token).ConfigureAwait(false);
+        }
+
+        /// <summary>Reads the collection a video belongs to from a view API payload, if it has more than one video.</summary>
+        public static bool TryGetCollection(JObject data, out long ownerId, out long seasonId)
+        {
+            ownerId = seasonId = 0;
+            var collection = data?["ugc_season"] as JObject;
+            if (collection == null) return false;
+            long? id = ReadInteger(collection["id"]);
+            long? owner = ReadInteger(collection["mid"]) ?? ReadInteger(data.SelectToken("owner.mid"));
+            int? count = ReadCount(collection["ep_count"]);
+            if (!id.HasValue || id.Value <= 0 || !owner.HasValue || owner.Value <= 0 || (count.HasValue && count.Value <= 1)) return false;
+            ownerId = owner.Value; seasonId = id.Value;
+            return true;
+        }
+
         /// <summary>Parses a view API payload. Public for deterministic offline regression tests.</summary>
         public static PlaylistResult ParseVideoPages(JObject data, string bvid)
         {
@@ -105,6 +134,11 @@ namespace BDownloader.Core
             if (!TryParse(url, out address))
                 throw new ArgumentException("不支持的哔哩哔哩列表链接；请提供 list/?sid= 或空间 lists/ 链接。", nameof(url));
 
+            return await ResolveListAsync(address, token).ConfigureAwait(false);
+        }
+
+        private async Task<PlaylistResult> ResolveListAsync(ListAddress address, CancellationToken token)
+        {
             token.ThrowIfCancellationRequested();
             JObject metadata = null;
             if (!address.IsSeason)

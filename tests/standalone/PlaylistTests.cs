@@ -47,6 +47,29 @@ internal static class PlaylistTests
             Require(rejected, "mismatched page total was accepted");
         });
 
+        Check("plain video link inside a collection lists the whole collection", async () =>
+        {
+            var requests = new List<string>();
+            Func<string, string> view = body => "{ 'code':0, 'data':{ 'title':'One', 'videos':1, 'owner':{'mid':161775300}, 'pages':[ {'page':1,'part':'One','duration':50} ]" + body + " } }";
+            Func<string, BilibiliPlaylistResolver> resolver = body => new BilibiliPlaylistResolver((url, token) =>
+            {
+                requests.Add(url);
+                if (url.Contains("/x/web-interface/view?bvid=BV1gHHE6xEPw")) return Task.FromResult(JObject.Parse(view(body)).ToString());
+                Require(url.Contains("seasons_archives_list") && url.Contains("mid=161775300") && url.Contains("season_id=1774529"), "collection was not read from its own API: " + url);
+                int page = QueryPage(url), first = (page - 1) * 30 + 1;
+                return Task.FromResult(Page(true, page, 61, 30, first, Math.Max(0, Math.Min(30, 61 - first + 1))).ToString());
+            });
+            PlaylistResult result = await resolver(", 'ugc_season':{ 'id':1774529, 'mid':161775300, 'title':'合集', 'ep_count':61 }").ResolveVideoAsync("BV1gHHE6xEPw", CancellationToken.None);
+            Require(result.IsComplete && result.Entries.Count == 61 && result.ExpectedCount == 61, "collection was not expanded");
+            Require(requests.Count == 4 && requests.Last().Contains("page_num=3"), "collection pages were not all requested");
+            requests.Clear();
+            PlaylistResult single = await resolver("").ResolveVideoAsync("BV1gHHE6xEPw", CancellationToken.None);
+            Require(single.ExpectedCount == 1 && requests.Count == 1, "a video outside any collection must stay a single video");
+            long owner, season;
+            Require(!BilibiliPlaylistResolver.TryGetCollection(JObject.Parse("{ 'ugc_season':{ 'id':5, 'mid':7, 'ep_count':1 } }"), out owner, out season), "one-video collection is not a list");
+            Require(BilibiliPlaylistResolver.TryGetCollection(JObject.Parse("{ 'owner':{'mid':7}, 'ugc_season':{ 'id':5 } }"), out owner, out season) && owner == 7 && season == 5, "owner fallback missing");
+        });
+
         Check("explicit season chooses season namespace and all pages", async () =>
         {
             var requests = new List<string>();

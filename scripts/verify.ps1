@@ -99,7 +99,7 @@ function Invoke-StandaloneSuite([string]$Name, [string]$Sandbox, [int]$ExpectedC
 
 try {
     # The playlist host's optional live-network case is excluded from this offline run.
-    Invoke-StandaloneSuite 'PlaylistTests' (Join-Path $runDirectory 'playlist') 19
+    Invoke-StandaloneSuite 'PlaylistTests' (Join-Path $runDirectory 'playlist') 20
     Invoke-StandaloneSuite 'MediaEngineTests' (Join-Path $runDirectory 'engine') 21 -NeedsMedia
     Invoke-StandaloneSuite 'MediaAccountsTests' $authDirectory 10
     Invoke-StandaloneSuite 'AppPathsTests' (Join-Path $runDirectory 'paths') 6

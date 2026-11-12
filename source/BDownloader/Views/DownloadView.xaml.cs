@@ -96,8 +96,9 @@ namespace BDownloader.Views
                     }
                     else if (BilibiliPlaylistResolver.TryGetVideoId(url, out string videoId))
                     {
-                        // A multi-part video is a list of pages; the view API gives the authoritative count and titles.
-                        var pages = await new BilibiliPlaylistResolver().ResolveVideoPagesAsync(videoId, operation.Token);
+                        // A multi-part video is a list of pages, and a video inside a collection (合集) stands for
+                        // the whole collection; the view API gives the authoritative count and titles.
+                        var pages = await new BilibiliPlaylistResolver().ResolveVideoAsync(videoId, operation.Token);
                         collection = pages.ExpectedCount <= 1
                             ? await engine.InspectAsync(url, lease.Session, operation.Token)
                             : ToCollection(pages, url);
