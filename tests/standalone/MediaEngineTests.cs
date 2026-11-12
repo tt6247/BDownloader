@@ -273,21 +273,32 @@ internal static class MediaEngineTests
         Environment.SetEnvironmentVariable("BD_TEST_CHILD_PID", null);
     }
 
+    /// <summary>
+    /// Several checks share one fake runtime. A tool that just ran can stay locked for a moment after
+    /// its process exits, so an identical copy is left alone instead of being overwritten.
+    /// </summary>
+    private static void CopyTool(string source, string destination)
+    {
+        if (File.Exists(destination) && new FileInfo(destination).Length == new FileInfo(source).Length
+            && File.GetLastWriteTimeUtc(destination) == File.GetLastWriteTimeUtc(source)) return;
+        File.Copy(source, destination, true);
+    }
+
     private static string PrepareFakeRuntime()
     {
         string fake = Path.Combine(artifacts, "fake-runtime"); Directory.CreateDirectory(fake);
         string self = Assembly.GetExecutingAssembly().Location;
-        File.Copy(self, Path.Combine(fake, "yt-dlp.exe"), true);
+        CopyTool(self, Path.Combine(fake, "yt-dlp.exe"));
         foreach (string assembly in new[] { typeof(MediaEngine).Assembly.Location, typeof(JObject).Assembly.Location })
             if (!string.Equals(Path.GetFileName(assembly), Path.GetFileName(self), StringComparison.OrdinalIgnoreCase))
-                File.Copy(assembly, Path.Combine(fake, Path.GetFileName(assembly)), true);
+                CopyTool(assembly, Path.Combine(fake, Path.GetFileName(assembly)));
         return fake;
     }
 
     private static async Task TestFakeDownload(string fixture)
     {
         string fake = PrepareFakeRuntime();
-        File.Copy(ffmpeg, Path.Combine(fake, "ffmpeg.exe"), true);
+        CopyTool(ffmpeg, Path.Combine(fake, "ffmpeg.exe"));
         string destination = Path.Combine(artifacts, "fake-download-" + Guid.NewGuid().ToString("N"));
         var options = new MediaDownloadOptions { OutputDirectory = destination, MaximumHeight = 90 };
         var item = Entry(0); item.DurationSeconds = null;
@@ -316,7 +327,7 @@ internal static class MediaEngineTests
     private static async Task TestRetry(string fixture)
     {
         string fake = PrepareFakeRuntime();
-        File.Copy(ffmpeg, Path.Combine(fake, "ffmpeg.exe"), true);
+        CopyTool(ffmpeg, Path.Combine(fake, "ffmpeg.exe"));
         string script = Path.Combine(artifacts, "fail-script-" + Guid.NewGuid().ToString("N") + ".txt");
         Environment.SetEnvironmentVariable("BD_TEST_FAKE_MEDIA", fixture);
         Environment.SetEnvironmentVariable("BD_TEST_FAIL_SCRIPT", script);
