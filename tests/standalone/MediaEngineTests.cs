@@ -37,6 +37,19 @@ internal static class MediaEngineTests
             string fixture = Environment.GetEnvironmentVariable("BD_TEST_FAKE_MEDIA");
             if (args.Contains("--no-playlist") && !string.IsNullOrEmpty(fixture))
             {
+                // Optional scripted failures: each line of the file is one stderr message to fail with, consumed in order.
+                string script = Environment.GetEnvironmentVariable("BD_TEST_FAIL_SCRIPT");
+                if (!string.IsNullOrEmpty(script))
+                {
+                    File.AppendAllLines(script + ".args", new[] { string.Join(" ", args) });
+                    string[] pending = File.Exists(script) ? File.ReadAllLines(script) : new string[0];
+                    if (pending.Length > 0)
+                    {
+                        File.WriteAllLines(script, pending.Skip(1));
+                        Console.Error.WriteLine(pending[0]);
+                        return 1;
+                    }
+                }
                 string destination = args[Array.IndexOf(args, "--paths") + 1];
                 string template = args[Array.IndexOf(args, "--output") + 1];
                 string file = Path.Combine(destination, template.Replace("%(title).100B", "Synthetic").Replace("%(id)s", "fixture").Replace("%(ext)s", "mp4"));
@@ -195,6 +208,31 @@ internal static class MediaEngineTests
             Require(a.Success && b.Success && a.ReceiptPath != b.ReceiptPath, "same filenames share a baseline");
             Require(Verify(first, 3, MediaDownloadMode.VideoAndAudio).Success && Verify(second, 3, MediaDownloadMode.VideoOnly).Success, "independent recheck failed");
         });
+        Check("site plans lower connections per level and end on the plain downloader", () => {
+            var bili = TransferPlan.For("https://www.bilibili.com/video/BV1xx411c7mD", 0, true);
+            var tube = TransferPlan.For("https://www.youtube.com/watch?v=fixture", 0, true);
+            Require(bili.Site == "bilibili" && bili.Aria2Connections == 4 && bili.ConcurrentFragments == 1, "bilibili first plan wrong");
+            Require(tube.Site == "youtube" && tube.Aria2Connections == 8 && tube.ConcurrentFragments == 4, "youtube first plan wrong");
+            Require(TransferPlan.For("https://b23.tv/abc", 1, true).Aria2Connections == 2 && TransferPlan.For("https://youtu.be/x", 1, true).ConcurrentFragments == 2, "second plan not halved");
+            Require(TransferPlan.For("https://youtu.be/x", 2, true).Aria2Connections == 0 && TransferPlan.For("https://youtu.be/x", 2, true).ConcurrentFragments == 1, "last plan must be the plain downloader");
+            Require(TransferPlan.For("https://youtu.be/x", 0, false).Aria2Connections == 0, "aria2 used although unavailable");
+        });
+        Check("network failures are retryable while permission errors are final", () => {
+            foreach (string text in new[] { "ERROR: [download] Got error: 497 bytes read, 108945175 more expected", "ERROR: unable to download video data: HTTP Error 503: Service Unavailable",
+                "[WinError 10054] An existing connection was forcibly closed", "ERROR: Read timed out.", "ERROR: HTTP Error 412: Precondition Failed" })
+                Require(MediaEngine.IsTransientFailure(text), "should retry: " + text);
+            foreach (string text in new[] { "", "ERROR: HTTP Error 404: Not Found", "ERROR: Private video. Sign in if you've been granted access", "ERROR: Requested format is not available",
+                "ERROR: HTTP Error 403: Forbidden. This video is only for premium members" })
+                Require(!MediaEngine.IsTransientFailure(text), "should not retry: " + text);
+            Require(MediaEngine.RetryDelay(1, "") == TimeSpan.FromSeconds(5) && MediaEngine.RetryDelay(2, "") == TimeSpan.FromSeconds(15), "backoff schedule changed");
+            Require(MediaEngine.RetryDelay(1, "HTTP Error 429: Too Many Requests") == TimeSpan.FromSeconds(30), "rate limit must wait longer");
+        });
+        Check("recorded command is copyable and hides the cookie file", () => {
+            string cookies = Path.Combine(artifacts, "private cookies.txt");
+            string command = MediaEngine.DescribeCommand(new[] { "--cookies", cookies, "--output", "a b.%(ext)s", "--", "https://youtu.be/x" }, new MediaSession { CookiesFile = cookies });
+            Require(command == "yt-dlp \"--cookies\" \"<cookies.txt>\" \"--output\" \"a b.%(ext)s\" \"--\" \"https://youtu.be/x\"", "unexpected command: " + command);
+        });
+        Check("transient failures back off retry and restart a stuck resume", () => TestRetry(video).GetAwaiter().GetResult());
         Check("download reports stderr progress quarantines corruption and retries fresh", () => TestFakeDownload(video).GetAwaiter().GetResult());
         Check("metadata cancellation terminates child process tree", () => TestCancellation().GetAwaiter().GetResult());
         Console.WriteLine("Media engine failures: " + failures); return failures == 0 ? 0 : 1;
@@ -273,6 +311,58 @@ internal static class MediaEngineTests
             Require(!Directory.GetFiles(destination, "*.verification.json").Any(), "completed download left a sidecar");
         }
         finally { Environment.SetEnvironmentVariable("BD_TEST_FAKE_MEDIA", null); }
+    }
+
+    private static async Task TestRetry(string fixture)
+    {
+        string fake = PrepareFakeRuntime();
+        File.Copy(ffmpeg, Path.Combine(fake, "ffmpeg.exe"), true);
+        string script = Path.Combine(artifacts, "fail-script-" + Guid.NewGuid().ToString("N") + ".txt");
+        Environment.SetEnvironmentVariable("BD_TEST_FAKE_MEDIA", fixture);
+        Environment.SetEnvironmentVariable("BD_TEST_FAIL_SCRIPT", script);
+        try
+        {
+            var fakeEngine = new MediaEngine(fake) { RetryDelayScale = 0.01 };
+            Func<MediaDownloadOptions> options = () => new MediaDownloadOptions { OutputDirectory = Path.Combine(artifacts, "retry-" + Guid.NewGuid().ToString("N")), MaximumHeight = 90 };
+            var item = Entry(0); item.DurationSeconds = null;
+            string shortRead = "ERROR: [download] Got error: 497 bytes read, 108945175 more expected. Giving up after 10 retries";
+
+            // Two short reads, then success: three runs, the last one restarts from zero.
+            File.WriteAllLines(script, new[] { shortRead, shortRead });
+            var progress = new RecordedProgress();
+            MediaDownloadResult recovered = (await fakeEngine.DownloadAsync(new[] { item }, options(), progress, CancellationToken.None))[0];
+            Require(recovered.Success && recovered.Attempts == 3, "did not recover on the third attempt: " + recovered.Attempts + " " + recovered.Error);
+            string[] runs = File.ReadAllLines(script + ".args");
+            Require(runs.Length == 3 && runs[0].Contains("--continue") && runs[1].Contains("--continue") && runs[2].Contains("--no-continue"), "last attempt did not restart the stuck resume");
+            Require(runs[0].Contains("--concurrent-fragments 4") && runs[1].Contains("--concurrent-fragments 2") && !runs[2].Contains("--concurrent-fragments"), "connections did not step down");
+            Require(runs.All(x => x.Contains("--retry-sleep http:exp=1:20")), "yt-dlp retry backoff missing");
+            Require(recovered.Command.Contains("--no-continue") && recovered.Command.StartsWith("yt-dlp "), "result does not carry the last command");
+            Require(progress.Events.Count(x => x.State == MediaDownloadState.Resolving && x.Message.Contains("次尝试")) == 2, "retry wait was not reported");
+
+            // A permission error is final: one run, no waiting.
+            File.Delete(script + ".args");
+            File.WriteAllLines(script, new[] { "ERROR: Private video. Sign in if you've been granted access" });
+            MediaDownloadResult denied = (await fakeEngine.DownloadAsync(new[] { item }, options(), null, CancellationToken.None))[0];
+            Require(!denied.Success && denied.Attempts == 1 && !string.IsNullOrEmpty(denied.Command), "permission error was retried");
+
+            // Persistent network failure stops after three runs and keeps the command for diagnosis.
+            File.Delete(script + ".args");
+            File.WriteAllLines(script, Enumerable.Repeat("ERROR: HTTP Error 503: Service Unavailable", 5));
+            MediaDownloadResult gaveUp = (await fakeEngine.DownloadAsync(new[] { item }, options(), null, CancellationToken.None))[0];
+            Require(!gaveUp.Success && gaveUp.Attempts == 3 && File.ReadAllLines(script + ".args").All(x => !x.Contains("--no-continue")), "retry limit or resume rule broken");
+
+            // HTTP 416 restarts once immediately without consuming a retry level.
+            File.Delete(script + ".args");
+            File.WriteAllLines(script, new[] { "ERROR: HTTP Error 416: Requested Range Not Satisfiable" });
+            MediaDownloadResult range = (await fakeEngine.DownloadAsync(new[] { item }, options(), null, CancellationToken.None))[0];
+            runs = File.ReadAllLines(script + ".args");
+            Require(range.Success && range.Attempts == 2 && runs[1].Contains("--no-continue") && runs[1].Contains("--concurrent-fragments 4"), "416 restart changed");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("BD_TEST_FAKE_MEDIA", null);
+            Environment.SetEnvironmentVariable("BD_TEST_FAIL_SCRIPT", null);
+        }
     }
 
     private sealed class RecordedProgress : IProgress<MediaProgress>

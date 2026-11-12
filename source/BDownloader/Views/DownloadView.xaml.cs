@@ -158,7 +158,9 @@ namespace BDownloader.Views
                         int batchIndex = row == null ? 0 : selected.IndexOf(row);
                         if (!OverallProgress.IsIndeterminate) OverallProgress.Value = (batchIndex + p.Percent / 100.0) * 100 / selected.Count;
                         string speed = p.BytesPerSecond > 0 ? " · " + (p.BytesPerSecond.Value / 1048576.0).ToString("0.00") + " MB/s" : "";
-                        StatusText.Text = "[" + (batchIndex + 1) + "/" + selected.Count + "] " + (row == null ? "" : row.Title + " · ") + StateText(p.State) + speed;
+                        // While waiting to retry, show the countdown message instead of the generic state.
+                        string label = p.State == MediaDownloadState.Resolving && !string.IsNullOrEmpty(p.Message) ? p.Message : StateText(p.State);
+                        StatusText.Text = "[" + (batchIndex + 1) + "/" + selected.Count + "] " + (row == null ? "" : row.Title + " · ") + label + speed;
                     });
                     // One item at a time allows durable history after each verified file.
                     foreach (var row in selected)
@@ -171,7 +173,9 @@ namespace BDownloader.Views
                         row.DownloadMode = options.Mode;
                         row.MaximumHeight = options.MaximumHeight;
                         row.Status = result.Success ? "完成 · 校验通过" : result.Cancelled ? "已暂停" : "失败 · 可重试";
-                        row.Detail = result.Success ? result.FilePath : result.Error;
+                        row.Command = result.Command ?? row.Command;
+                        row.Attempts = result.Attempts;
+                        row.Detail = result.Success ? result.FilePath : result.Error + (result.Attempts > 1 ? "（已自动尝试 " + result.Attempts + " 次）" : "");
                         row.Progress = result.Success ? 100 : row.Progress;
                         if (result.Success) passed++; else failed++;
                         Save();
@@ -214,6 +218,29 @@ namespace BDownloader.Views
             catch (OperationCanceledException) { StatusText.Text = "校验已取消。"; }
             catch (Exception ex) { StatusText.Text = "校验失败：" + ex.Message; }
             finally { SetBusy(false); }
+        }
+
+        private void CopyCommand_Click(object sender, RoutedEventArgs e)
+        {
+            var row = (sender as FrameworkElement)?.DataContext as MediaRow;
+            if (row == null) return;
+            if (string.IsNullOrEmpty(row.Command)) { StatusText.Text = "“" + row.Title + "”还没有下载记录，下载一次后即可复制命令。"; return; }
+            CopyText(row.Command, "已复制下载命令（Cookie 路径已隐藏）。");
+        }
+
+        private void CopyDetail_Click(object sender, RoutedEventArgs e)
+        {
+            var row = (sender as FrameworkElement)?.DataContext as MediaRow;
+            if (row == null) return;
+            if (string.IsNullOrEmpty(row.Detail)) { StatusText.Text = "“" + row.Title + "”暂无详情。"; return; }
+            CopyText(row.Detail, "已复制详情。");
+        }
+
+        private void CopyText(string text, string done)
+        {
+            // The clipboard can be held by another program for a moment; report that instead of crashing.
+            try { Clipboard.SetDataObject(text, true); StatusText.Text = done; }
+            catch (System.Runtime.InteropServices.ExternalException) { StatusText.Text = "剪贴板正被其他程序占用，请稍后再试。"; }
         }
 
         public void ShowAccounts()
@@ -274,6 +301,9 @@ namespace BDownloader.Views
         private string detail; public string Detail { get => detail; set { detail = value; Changed("Detail"); } }
         public string FilePath { get; set; }
         public string ReceiptPath { get; set; }
+        /// <summary>Last yt-dlp command line for this item (cookie path hidden); kept with the queue.</summary>
+        public string Command { get; set; }
+        public int Attempts { get; set; }
         public MediaDownloadMode DownloadMode { get; set; }
         public int MaximumHeight { get; set; }
         public event PropertyChangedEventHandler PropertyChanged;

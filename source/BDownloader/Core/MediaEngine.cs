@@ -76,6 +76,37 @@ namespace BDownloader.Core
         public string Error { get; set; }
         public string Sha256 { get; set; }
         public double ActualDurationSeconds { get; set; }
+        /// <summary>The last yt-dlp command line that ran for this item, with the cookie file path hidden.</summary>
+        public string Command { get; set; }
+        /// <summary>How many times yt-dlp was started for this item, including automatic retries.</summary>
+        public int Attempts { get; set; }
+    }
+
+    /// <summary>
+    /// Per-site transfer settings. Level 0 is the first try; every transient failure moves one level
+    /// down: fewer connections first, then the plain single-connection downloader.
+    /// </summary>
+    public sealed class TransferPlan
+    {
+        public const int MaxLevels = 3;
+        public string Site { get; private set; }
+        /// <summary>Connections for aria2c; 0 means yt-dlp's own downloader.</summary>
+        public int Aria2Connections { get; private set; }
+        public int ConcurrentFragments { get; private set; }
+
+        public static TransferPlan For(string url, int level, bool aria2Available)
+        {
+            Uri uri;
+            string host = Uri.TryCreate(url, UriKind.Absolute, out uri) ? uri.DnsSafeHost.ToLowerInvariant() : "";
+            bool bilibili = new[] { "bilibili.com", "b23.tv" }.Any(x => host == x || host.EndsWith("." + x, StringComparison.Ordinal));
+            // Bilibili's CDN serves each stream as one file and drops clients that open many connections,
+            // so it starts lower. YouTube tolerates more and also offers fragmented formats.
+            int connections = bilibili ? 4 : 8, fragments = bilibili ? 1 : 4;
+            if (level == 1) { connections /= 2; fragments = Math.Max(1, fragments / 2); }
+            else if (level >= 2) { connections = 0; fragments = 1; }
+            return new TransferPlan { Site = bilibili ? "bilibili" : "youtube",
+                Aria2Connections = aria2Available ? connections : 0, ConcurrentFragments = fragments };
+        }
     }
 
     /// <summary>
@@ -91,6 +122,8 @@ namespace BDownloader.Core
         private const string ProgressPrefix = "__BD_PROGRESS__";
         private const string FilePrefix = "__BD_FILE__";
         private const string DurationPrefix = "__BD_DURATION__";
+        /// <summary>Scales the wait between automatic retries. Tests lower it; 1 is the normal schedule.</summary>
+        public double RetryDelayScale { get; set; } = 1;
 
         public MediaEngine(string appDirectory)
         {
@@ -185,24 +218,14 @@ namespace BDownloader.Core
                     Report(progress, entry, MediaDownloadState.Cancelled, 0, "已取消", completed, selected.Count);
                     continue;
                 }
-                string path = null;
+                string path = null, command = null;
+                int attempts = 0;
                 try
                 {
                     ValidateUrl(entry.Url);
-                    var args = BaseArguments(options.Session);
-                    args.AddRange(new[] { "--no-playlist", "--continue", "--part", "--abort-on-unavailable-fragments",
-                        "--retries", "10", "--fragment-retries", "10", "--file-access-retries", "3", "--newline", "--progress", "--no-simulate",
-                        "--windows-filenames", "--trim-filenames", "180", "--no-overwrites", "--ffmpeg-location", directory,
-                        "--paths", Path.GetFullPath(options.OutputDirectory), "--output", OutputTemplate(entry, options),
-                        "--progress-template", "download:" + ProgressPrefix + "%(progress)j",
-                        "--print", "after_move:" + FilePrefix + "%(filepath)j",
-                        "--print", "before_dl:" + DurationPrefix + "%(duration)j" });
-                    args.AddRange(FormatArguments(options));
-                    args.AddRange(Aria2Arguments());
-                    if (DebugEnabled) args.Add("--verbose");
-                    args.Add("--"); args.Add(entry.Url);
                     Report(progress, entry, MediaDownloadState.Resolving, 0, "获取下载地址", completed, selected.Count);
                     double? duration = entry.DurationSeconds;
+                    long gained = 0; long? lastReceived = null;
                     Action<string> onLine = line => {
                         if (line.StartsWith(FilePrefix, StringComparison.Ordinal))
                         {
@@ -219,6 +242,9 @@ namespace BDownloader.Core
                                 JObject p = JObject.Parse(line.Substring(ProgressPrefix.Length));
                                 long? received = (long?)p["downloaded_bytes"];
                                 long? total = (long?)p["total_bytes"] ?? (long?)p["total_bytes_estimate"];
+                                // Bytes that arrived during this run only; a resumed file starts above zero.
+                                if (received.HasValue && lastReceived.HasValue && received.Value > lastReceived.Value) gained += received.Value - lastReceived.Value;
+                                if (received.HasValue) lastReceived = received;
                                 double percent = total > 0 ? Math.Min(100, 100.0 * (received ?? 0) / total.Value) : 0;
                                 Report(progress, entry, MediaDownloadState.Downloading, percent, "下载中", completed, selected.Count,
                                     received, total, PositiveNumber(p["speed"]));
@@ -229,15 +255,42 @@ namespace BDownloader.Core
                             || line.StartsWith("[VideoRemuxer]", StringComparison.Ordinal))
                             Report(progress, entry, MediaDownloadState.Processing, 100, "合并或转换媒体", completed, selected.Count);
                     };
-                    var output = await MediaProcess.RunAsync(YtDlp, args, directory, onLine, false, token).ConfigureAwait(false);
-                    if (output.ExitCode != 0 && (output.StandardError ?? "").Contains("HTTP Error 416"))
+                    bool aria2Available = Aria2Path() != null;
+                    int level = 0;
+                    bool restart = false, restartedAfter416 = false, onlyShortReads = true;
+                    ProcessOutput output;
+                    while (true)
                     {
-                        // A partial file left by an earlier attempt no longer matches the server's copy.
-                        // Restart this item once without resuming; the option must come before the "--" separator.
-                        args.Insert(args.Count - 2, "--no-continue");
+                        TransferPlan plan = TransferPlan.For(entry.Url, level, aria2Available);
+                        List<string> args = DownloadArguments(entry, options, plan, restart);
+                        command = DescribeCommand(args, options.Session);
+                        attempts++;
+                        gained = 0; lastReceived = null;
                         output = await MediaProcess.RunAsync(YtDlp, args, directory, onLine, false, token).ConfigureAwait(false);
+                        if (output.ExitCode == 0) break;
+                        string stderr = output.StandardError ?? "";
+                        if (DebugEnabled) AppendDebugLog(entry.Id + " " + entry.Url + Environment.NewLine + command, stderr);
+                        if (stderr.Contains("HTTP Error 416") && !restart && !restartedAfter416)
+                        {
+                            // A partial file left by an earlier attempt no longer matches the server's copy.
+                            // Start this item again from zero, once, without waiting.
+                            restart = restartedAfter416 = true;
+                            continue;
+                        }
+                        if (level + 1 >= TransferPlan.MaxLevels || !IsTransientFailure(stderr)) break;
+                        onlyShortReads &= gained < 1024 * 1024 && Regex.IsMatch(stderr, @"more expected|IncompleteRead");
+                        level++;
+                        TransferPlan next = TransferPlan.For(entry.Url, level, aria2Available);
+                        // aria2 leaves a segmented partial file that the plain downloader cannot continue.
+                        if (plan.Aria2Connections > 0 && next.Aria2Connections == 0) restart = true;
+                        // The server keeps answering a resume request with a few bytes: the partial file is the
+                        // trigger, so the last try starts from zero. Any real progress keeps the partial file.
+                        else if (level == TransferPlan.MaxLevels - 1 && onlyShortReads && plan.Aria2Connections == 0) restart = true;
+                        TimeSpan wait = TimeSpan.FromSeconds(RetryDelay(level, stderr).TotalSeconds * Math.Max(0, RetryDelayScale));
+                        Report(progress, entry, MediaDownloadState.Resolving, 0, "网络中断，" + Math.Ceiling(wait.TotalSeconds).ToString(CultureInfo.InvariantCulture)
+                            + " 秒后进行第 " + (level + 1).ToString(CultureInfo.InvariantCulture) + " 次尝试", completed, selected.Count);
+                        await Task.Delay(wait, token).ConfigureAwait(false);
                     }
-                    if (output.ExitCode != 0 && DebugEnabled) AppendDebugLog(entry.Id + " " + entry.Url, output.StandardError);
                     if (output.ExitCode != 0) throw new InvalidOperationException(FriendlyError(output.StandardError, options.Session));
                     if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) throw new InvalidOperationException("下载器没有产生完整的最终文件，未标记为完成。");
                     path = Path.GetFullPath(path);
@@ -255,7 +308,7 @@ namespace BDownloader.Core
                     Report(progress, entry, MediaDownloadState.Verifying, 0, "全程解码校验与 SHA-256 检查", completed, selected.Count);
                     MediaDownloadResult result = await VerifyCoreAsync(path, verificationEntry, options, token, value =>
                         Report(progress, entry, MediaDownloadState.Verifying, value, "全程解码校验", completed, selected.Count), false).ConfigureAwait(false);
-                    result.Entry = entry;
+                    result.Entry = entry; result.Command = command; result.Attempts = attempts;
                     if (result.Cancelled) throw new OperationCanceledException(token);
                     if (!result.Success)
                     {
@@ -272,13 +325,14 @@ namespace BDownloader.Core
                 }
                 catch (OperationCanceledException)
                 {
-                    results.Add(new MediaDownloadResult { Entry = entry, FilePath = path, Cancelled = true, Error = "已取消，保留临时文件供下次续传。" });
+                    results.Add(new MediaDownloadResult { Entry = entry, FilePath = path, Cancelled = true, Error = "已取消，保留临时文件供下次续传。",
+                        Command = command, Attempts = attempts });
                     Report(progress, entry, MediaDownloadState.Cancelled, 0, "已取消", completed, selected.Count);
                 }
                 catch (Exception ex)
                 {
                     string error = FriendlyError(ex.Message, options.Session);
-                    results.Add(new MediaDownloadResult { Entry = entry, FilePath = path, Error = error });
+                    results.Add(new MediaDownloadResult { Entry = entry, FilePath = path, Error = error, Command = command, Attempts = attempts });
                     Report(progress, entry, MediaDownloadState.Failed, 0, error, completed, selected.Count);
                 }
             }
@@ -442,21 +496,83 @@ namespace BDownloader.Core
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
 
+        private List<string> DownloadArguments(MediaEntry entry, MediaDownloadOptions options, TransferPlan plan, bool restart)
+        {
+            var args = BaseArguments(options.Session);
+            args.AddRange(new[] { "--no-playlist", restart ? "--no-continue" : "--continue", "--part", "--abort-on-unavailable-fragments",
+                "--retries", "10", "--fragment-retries", "10", "--file-access-retries", "3",
+                // Wait 1, 2, 4 ... up to 20 seconds between yt-dlp's own retries instead of retrying at once.
+                "--retry-sleep", "http:exp=1:20", "--retry-sleep", "fragment:exp=1:20", "--retry-sleep", "extractor:exp=1:10",
+                "--newline", "--progress", "--no-simulate",
+                "--windows-filenames", "--trim-filenames", "180", "--no-overwrites", "--ffmpeg-location", directory,
+                "--paths", Path.GetFullPath(options.OutputDirectory), "--output", OutputTemplate(entry, options),
+                "--progress-template", "download:" + ProgressPrefix + "%(progress)j",
+                "--print", "after_move:" + FilePrefix + "%(filepath)j",
+                "--print", "before_dl:" + DurationPrefix + "%(duration)j" });
+            args.AddRange(FormatArguments(options));
+            if (plan.ConcurrentFragments > 1)
+                args.AddRange(new[] { "--concurrent-fragments", plan.ConcurrentFragments.ToString(CultureInfo.InvariantCulture) });
+            args.AddRange(Aria2Arguments(plan.Aria2Connections));
+            if (DebugEnabled) args.Add("--verbose");
+            args.Add("--"); args.Add(entry.Url);
+            return args;
+        }
+
+        /// <summary>
+        /// A copyable record of what was run. The cookie file is a short-lived private path, so it is
+        /// replaced by a placeholder; everything else is exactly what yt-dlp received.
+        /// </summary>
+        public static string DescribeCommand(IEnumerable<string> arguments, MediaSession session)
+        {
+            if (arguments == null) throw new ArgumentNullException(nameof(arguments));
+            string cookies = string.IsNullOrWhiteSpace(session?.CookiesFile) ? null : Path.GetFullPath(session.CookiesFile);
+            return "yt-dlp " + string.Join(" ", arguments.Select(x =>
+                cookies != null && string.Equals(x, cookies, StringComparison.OrdinalIgnoreCase) ? "<cookies.txt>" : x).Select(MediaProcess.QuoteArgument));
+        }
+
+        /// <summary>
+        /// True for failures that a later attempt can cure: dropped or reset connections, short reads,
+        /// rate limiting and server errors. Permission, login and missing-content errors are final.
+        /// </summary>
+        public static bool IsTransientFailure(string stderr)
+        {
+            if (string.IsNullOrWhiteSpace(stderr)) return false;
+            if (Regex.IsMatch(stderr, @"(?i)HTTP Error 40[14]|Sign in|log ?in required|Private video|members-only|premium|Video unavailable|Requested format is not available|DRM|copyright"))
+                return false;
+            return Regex.IsMatch(stderr, @"(?i)Connection (?:reset|aborted|refused|broken)|ConnectionResetError|WinError 100(?:53|54|60)|timed out|IncompleteRead|more expected"
+                + @"|Remote end closed|EOF occurred|TransportError|HTTP Error (?:403|408|412|429|5\d\d)|aria2c exited|getaddrinfo failed|Temporary failure|giving up after \d+ retries");
+        }
+
+        /// <summary>5 s, then 15 s. Rate limiting (HTTP 412 / 429) waits six times longer.</summary>
+        public static TimeSpan RetryDelay(int level, string stderr)
+        {
+            double seconds = 5 * Math.Pow(3, Math.Max(0, level - 1));
+            if (Regex.IsMatch(stderr ?? "", @"HTTP Error (?:412|429)")) seconds *= 6;
+            return TimeSpan.FromSeconds(seconds);
+        }
+
         /// <summary>
         /// Optional multi-connection transfer for single-file streams. Off by default: used only when
-        /// BDOWNLOADER_ARIA2=1 is set and aria2c.exe sits next to yt-dlp.exe. aria2 writes its log to
-        /// %LOCALAPPDATA%\BDownloader\aria2.log so a failure can be diagnosed.
+        /// BDOWNLOADER_ARIA2=1 is set and aria2c.exe sits next to yt-dlp.exe.
         /// </summary>
-        private IEnumerable<string> Aria2Arguments()
+        private string Aria2Path()
         {
-            if (Environment.GetEnvironmentVariable("BDOWNLOADER_ARIA2") != "1") return Enumerable.Empty<string>();
+            if (Environment.GetEnvironmentVariable("BDOWNLOADER_ARIA2") != "1") return null;
             string aria2 = Path.Combine(directory, "aria2c.exe");
-            if (!File.Exists(aria2)) return Enumerable.Empty<string>();
+            return File.Exists(aria2) ? aria2 : null;
+        }
+
+        /// <summary>aria2 writes its log to %LOCALAPPDATA%\BDownloader\aria2.log so a failure can be diagnosed.</summary>
+        private IEnumerable<string> Aria2Arguments(int connections)
+        {
+            string aria2 = connections > 0 ? Aria2Path() : null;
+            if (aria2 == null) return Enumerable.Empty<string>();
             string logDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BDownloader");
             Directory.CreateDirectory(logDirectory);
             string log = Path.Combine(logDirectory, "aria2.log");
+            string n = connections.ToString(CultureInfo.InvariantCulture);
             return new[] { "--external-downloader", aria2,
-                "--external-downloader-args", "aria2c:-x8 -s8 -k1M --file-allocation=none --auto-file-renaming=false --log=\"" + log + "\" --log-level=notice" };
+                "--external-downloader-args", "aria2c:-x" + n + " -s" + n + " -k1M --max-tries=5 --retry-wait=3 --file-allocation=none --auto-file-renaming=false --log=\"" + log + "\" --log-level=notice" };
         }
 
         /// <summary>Set BDOWNLOADER_DEBUG=1 to record yt-dlp's verbose output for failed downloads.</summary>
